@@ -1,0 +1,13 @@
+{
+  "name": "market-analyzer",
+  "version": "1.0.0",
+  "description": "Analizador de mercado: crypto, acciones y ETFs con análisis técnico, fundamental, chartismo y sentimiento de analistas de YouTube",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

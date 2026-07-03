@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Market Analyzer — Crypto, Bolsa y ETFs</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+  <header>
+    <h1>📊 Market Analyzer</h1>
+    <div id="market-badges">
+      <span class="badge" id="badge-fng">F&G: …</span>
+      <span class="badge" id="badge-dominance">BTC dom: …</span>
+      <span class="badge" id="badge-sentiment">Analistas: …</span>
+    </div>
+    <nav>
+      <button class="tab active" data-tab="oportunidades">🎯 Oportunidades</button>
+      <button class="tab" data-tab="analisis">📈 Análisis</button>
+      <button class="tab" data-tab="analistas">🎥 Analistas</button>
+      <button class="tab" data-tab="cartera">💼 Cartera</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- LANDING: mejores oportunidades -->
+    <section id="tab-oportunidades" class="tab-panel active">
+      <div class="section-head">
+        <h2>Mejores oportunidades</h2>
+        <span class="muted" id="generated-at"></span>
+      </div>
+      <p class="muted disclaimer">Análisis automático combinando técnico, fundamental, chartismo y sentimiento de analistas. No es asesoramiento financiero.</p>
+      <div id="opportunities" class="cards"><div class="loading">Cargando análisis de mercado…</div></div>
+    </section>
+
+    <!-- ANÁLISIS por activo -->
+    <section id="tab-analisis" class="tab-panel">
+      <div class="section-head">
+        <h2>Análisis de activo</h2>
+        <select id="asset-select"></select>
+      </div>
+      <div id="analysis-detail">
+        <div class="loading">Selecciona un activo…</div>
+      </div>
+    </section>
+
+    <!-- ANALISTAS YouTube -->
+    <section id="tab-analistas" class="tab-panel">
+      <div class="section-head"><h2>Analistas de YouTube</h2></div>
+      <p class="muted disclaimer">Sentimiento estimado por palabras clave en los títulos de sus últimos vídeos, ponderado por recencia.</p>
+      <div id="analysts" class="analyst-list"><div class="loading">Cargando canales…</div></div>
+    </section>
+
+    <!-- CARTERA -->
+    <section id="tab-cartera" class="tab-panel">
+      <div class="section-head"><h2>Registro de inversiones</h2></div>
+      <form id="inv-form" class="inv-form">
+        <select id="inv-asset" required></select>
+        <input type="number" id="inv-qty" placeholder="Cantidad" step="any" min="0" required>
+        <input type="number" id="inv-price" placeholder="Precio de compra ($)" step="any" min="0" required>
+        <input type="date" id="inv-date">
+        <input type="text" id="inv-notes" placeholder="Notas (opcional)">
+        <button type="submit">＋ Añadir</button>
+      </form>
+      <div id="portfolio-summary" class="portfolio-summary"></div>
+      <div class="table-wrap">
+        <table id="inv-table">
+          <thead>
+            <tr><th>Activo</th><th>Fecha</th><th>Cantidad</th><th>P. compra</th><th>P. actual</th><th>Invertido</th><th>Valor</th><th>P&L</th><th>%</th><th></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
