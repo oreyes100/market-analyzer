@@ -11,7 +11,13 @@ import {
 import { analyzeChannel, aggregateSentiment } from './lib/sentiment.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_FILE = path.join(__dirname, 'data', 'investments.json');
+const IS_VERCEL = !!process.env.VERCEL;
+// En Vercel el filesystem del proyecto es de solo lectura salvo /tmp, y /tmp es efímero
+// (no sobrevive entre invocaciones ni despliegues). La cartera solo persiste de verdad
+// corriendo el servidor localmente (ver start-mac.command / start-windows.bat).
+const DATA_FILE = IS_VERCEL
+  ? path.join('/tmp', 'investments.json')
+  : path.join(__dirname, 'data', 'investments.json');
 const PORT = process.env.PORT || 3117;
 
 const app = express();
@@ -155,8 +161,12 @@ async function warmCaches() {
   }
   console.log('[warm] ciclo completado');
 }
-setTimeout(warmCaches, 1000);
-setInterval(warmCaches, 15 * 60_000);
+// El calentador en background solo tiene sentido en un proceso persistente (local).
+// En Vercel cada invocación es una función efímera: no hay "background" entre requests.
+if (!IS_VERCEL) {
+  setTimeout(warmCaches, 1000);
+  setInterval(warmCaches, 15 * 60_000);
+}
 
 // ---------- API ----------
 
@@ -170,7 +180,7 @@ app.get('/api/overview', async (req, res) => {
     const sentiment = aggregateSentiment(analysts);
 
     const settled = await Promise.allSettled(
-      ALL_ASSETS.map(({ type, item }) => withTimeout(analyzeAsset(type, item), 12_000, item.symbol))
+      ALL_ASSETS.map(({ type, item }) => withTimeout(analyzeAsset(type, item), 45_000, item.symbol))
     );
     const assets = [];
     const errors = [];
@@ -309,6 +319,10 @@ app.delete('/api/investments/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
-app.listen(PORT, () => {
-  console.log(`Market Analyzer en http://localhost:${PORT}`);
-});
+if (!IS_VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`Market Analyzer en http://localhost:${PORT}`);
+  });
+}
+
+export default app;
