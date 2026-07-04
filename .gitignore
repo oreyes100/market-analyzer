@@ -1,5 +1,9 @@
 node_modules/
 data/investments.json
+data/transcripts/
+data/sentiment_deep.json
+data/alerts.json
+data/social_baseline.json
 .vercel
 *.log
 .DS_Store

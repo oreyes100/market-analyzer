@@ -9,6 +9,9 @@ import {
   stockChart, channelVideos, cached,
 } from './lib/sources.js';
 import { analyzeChannel, aggregateSentiment } from './lib/sentiment.js';
+import { buildIntel, loadIntel, alertsSince, isBuilding, fuseRecommendations } from './lib/intel.js';
+import { ollamaStatus, ollamaGenerate } from './lib/ollama.js';
+import { ASSET_ALIASES } from './lib/aliases.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const IS_VERCEL = !!process.env.VERCEL;
@@ -170,27 +173,26 @@ if (!IS_VERCEL) {
 
 // ---------- API ----------
 
-app.get('/api/overview', async (req, res) => {
-  try {
-    const [fng, global, analysts] = await Promise.all([
-      fearGreed().catch(() => null),
-      globalCrypto().catch(() => null),
-      analystsReport().catch(() => []),
-    ]);
-    const sentiment = aggregateSentiment(analysts);
+async function buildOverview() {
+  const [fng, global, analysts] = await Promise.all([
+    fearGreed().catch(() => null),
+    globalCrypto().catch(() => null),
+    analystsReport().catch(() => []),
+  ]);
+  const sentiment = aggregateSentiment(analysts);
 
-    const settled = await Promise.allSettled(
-      ALL_ASSETS.map(({ type, item }) => withTimeout(analyzeAsset(type, item), 45_000, item.symbol))
-    );
-    const assets = [];
-    const errors = [];
-    for (let i = 0; i < settled.length; i++) {
-      const r = settled[i];
-      if (r.status === 'fulfilled') assets.push(r.value);
-      else errors.push({ asset: ALL_ASSETS[i].item.symbol, error: r.reason?.message });
-    }
+  const settled = await Promise.allSettled(
+    ALL_ASSETS.map(({ type, item }) => withTimeout(analyzeAsset(type, item), 45_000, item.symbol))
+  );
+  const assets = [];
+  const errors = [];
+  for (let i = 0; i < settled.length; i++) {
+    const r = settled[i];
+    if (r.status === 'fulfilled') assets.push(r.value);
+    else errors.push({ asset: ALL_ASSETS[i].item.symbol, error: r.reason?.message });
+  }
 
-    const opportunities = assets.map(a => {
+  const opportunities = assets.map(a => {
       let score = a.technical.technicalScore + a.fundamental.score;
       const reasons = [];
       // Sentimiento de analistas afecta más a crypto (canales mayormente crypto)
@@ -218,12 +220,21 @@ app.get('/api/overview', async (req, res) => {
         extraReasons: reasons,
         change24h: a.fundamental.data.change24h ?? null,
       };
-    }).sort((x, y) => y.score - x.score);
+  }).sort((x, y) => y.score - x.score);
 
-    res.json({ fearGreed: fng, global, sentiment, analysts: analysts.map(a => ({
+  return {
+    fearGreed: fng, global, sentiment,
+    analysts: analysts.map(a => ({
       name: a.name, handle: a.handle, url: a.url,
       sentimentScore: a.sentimentScore, sentimentLabel: a.sentimentLabel, error: a.error ?? null,
-    })), opportunities, errors, generatedAt: new Date().toISOString() });
+    })),
+    opportunities, errors, generatedAt: new Date().toISOString(),
+  };
+}
+
+app.get('/api/overview', async (req, res) => {
+  try {
+    res.json(await cached('overview', 4 * 60_000, buildOverview));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -262,12 +273,159 @@ app.get('/api/assets', (req, res) => {
   });
 });
 
+// ---------- Core IA: intel (agentes A+B), alertas y voz ----------
+
+async function runIntelCycle() {
+  if (isBuilding()) return loadIntel();
+  const [overview, investments] = await Promise.all([
+    cached('overview', 4 * 60_000, buildOverview),
+    enrichInvestments().catch(() => []),
+  ]);
+  return buildIntel({
+    opportunities: overview.opportunities,
+    fearGreed: overview.fearGreed,
+    investments,
+  });
+}
+
+if (!IS_VERCEL) {
+  // Ciclo de inteligencia cada 15 min, arrancando después del primer calentamiento de caché
+  setTimeout(() => runIntelCycle().catch(e => console.warn(`[intel] ${e.message}`)), 90_000);
+  setInterval(() => runIntelCycle().catch(e => console.warn(`[intel] ${e.message}`)), 15 * 60_000);
+}
+
+app.get('/api/intel', async (req, res) => {
+  try {
+    let intel = await loadIntel();
+    const stale = !intel || Date.now() - new Date(intel.generatedAt).getTime() > 20 * 60_000;
+    if (stale && !isBuilding()) {
+      if (req.query.wait === '1') {
+        intel = await runIntelCycle();
+      } else {
+        runIntelCycle().catch(e => console.warn(`[intel] ${e.message}`));
+      }
+    }
+    if (!intel) return res.json({ building: true, message: 'Generando inteligencia — reintenta en ~1 min' });
+    res.json({ ...intel, building: isBuilding() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/alerts', async (req, res) => {
+  res.json(await alertsSince(Number(req.query.since ?? 0)));
+});
+
+app.get('/api/aliases', (req, res) => {
+  res.json(ASSET_ALIASES);
+});
+
+const DISCLAIMER_VOICE = 'Recuerda: este es un análisis automático, no asesoramiento financiero tradicional.';
+
+function fmtSpeechPrice(v) {
+  if (v == null) return 'no disponible';
+  return v >= 1000 ? Math.round(v).toLocaleString('es-ES') + ' dólares'
+    : (Math.round(v * 100) / 100).toLocaleString('es-ES') + ' dólares';
+}
+
+function staleNote(generatedAt) {
+  const mins = Math.round((Date.now() - new Date(generatedAt).getTime()) / 60_000);
+  return mins > 10 ? `Datos técnicos basados en la última actualización de caché de hace ${mins} minutos. Procediendo con el análisis disponible. ` : '';
+}
+
+// Genera el texto hablado (TTS-ready, español) para cada tipo de informe
+app.get('/api/voice/brief', async (req, res) => {
+  try {
+    const type = req.query.type ?? 'market';
+    const overview = await cached('overview', 4 * 60_000, buildOverview);
+    const intel = await loadIntel();
+    const fused = intel?.fused?.length ? intel.fused : overview.opportunities.map(o => ({ ...o, fusedScore: o.score, fusedAction: o.action, intelDrivers: [] }));
+    let speech = '';
+
+    if (type === 'portfolio') {
+      const invs = await enrichInvestments();
+      if (!invs.length) {
+        speech = 'Tu cartera está vacía. Puedes decir, por ejemplo: añade cero punto uno de bitcoin a sesenta mil, para registrar una posición.';
+      } else {
+        const invested = invs.reduce((a, i) => a + i.invested, 0);
+        const value = invs.reduce((a, i) => a + (i.currentValue ?? i.invested), 0);
+        const pnlPct = invested > 0 ? Math.round(((value - invested) / invested) * 10000) / 100 : 0;
+        const best = [...invs].sort((a, b) => (b.pnlPct ?? 0) - (a.pnlPct ?? 0))[0];
+        const dir = pnlPct >= 0 ? 'arriba' : 'abajo';
+        speech = `Informe de cartera. Tu portafolio está ${dir} un ${Math.abs(pnlPct).toLocaleString('es-ES')} por ciento`
+          + (best?.pnlPct != null ? `, liderado por tu posición en ${best.name} con ${best.pnlPct >= 0 ? 'ganancia' : 'pérdida'} del ${Math.abs(best.pnlPct)} por ciento` : '')
+          + `. Valor actual: ${fmtSpeechPrice(value)} sobre ${fmtSpeechPrice(invested)} invertidos.`;
+        if (overview.fearGreed) {
+          const f = overview.fearGreed;
+          speech += ` El índice Fear and Greed está en ${f.value}, ${f.value <= 30 ? 'sugiriendo cautela o acumulación estratégica' : f.value >= 70 ? 'zona de codicia — considera asegurar beneficios' : 'en zona neutral'}.`;
+        }
+      }
+    } else if (type === 'opportunities' || type === 'market') {
+      const top = fused.slice(0, 3);
+      const f = overview.fearGreed;
+      speech = `Informe de apertura. `
+        + (f ? `El sentimiento general del mercado está en ${f.value} sobre cien: ${f.value <= 25 ? 'miedo extremo' : f.value <= 45 ? 'miedo' : f.value >= 75 ? 'codicia extrema' : f.value >= 55 ? 'codicia' : 'neutral'}. ` : '')
+        + `Las mejores oportunidades ahora mismo: `
+        + top.map((o, i) => `${i + 1}: ${o.name}, score ${o.fusedScore}, señal de ${o.fusedAction}, precio ${fmtSpeechPrice(o.price)} con entrada sugerida en ${fmtSpeechPrice(o.trade?.entry)}`).join('. ')
+        + '.';
+      if (intel?.llmDigest) speech += ' ' + intel.llmDigest;
+    } else if (type === 'asset') {
+      const id = req.query.id;
+      const o = fused.find(x => x.id === id || x.symbol?.toLowerCase() === String(id).toLowerCase());
+      if (!o) {
+        speech = 'No encontré ese activo entre los diecinueve del sistema.';
+      } else {
+        speech = `Análisis de ${o.name}. Precio actual ${fmtSpeechPrice(o.price)}. Tendencia ${o.trend}, RSI en ${Math.round(o.rsi ?? 0)}. `
+          + `Score combinado ${o.fusedScore}: señal de ${o.fusedAction}. `
+          + `Entrada sugerida en ${fmtSpeechPrice(o.trade?.entry)}, objetivo en ${fmtSpeechPrice(o.trade?.target)}, stop en ${fmtSpeechPrice(o.trade?.stop)}. `
+          + (o.intelDrivers?.length ? o.intelDrivers.join('. ') + '. ' : '')
+          + (o.deepYoutube?.targets?.length ? `Los analistas de YouTube mencionan objetivos cerca de ${o.deepYoutube.targets.slice(-1).map(fmtSpeechPrice).join(', ')}. ` : '');
+      }
+    } else {
+      return res.status(400).json({ error: 'type debe ser market|portfolio|opportunities|asset' });
+    }
+
+    speech = staleNote(overview.generatedAt) + speech + ' ' + DISCLAIMER_VOICE;
+    res.json({ speech });
+  } catch (e) {
+    res.status(500).json({ error: e.message, speech: 'Hubo un problema generando el informe. Intenta de nuevo en un momento.' });
+  }
+});
+
+// Pregunta libre → Ollama local con contexto del mercado (si está disponible)
+app.post('/api/voice/ask', async (req, res) => {
+  const question = String(req.body?.question ?? '').slice(0, 500);
+  if (!question) return res.status(400).json({ error: 'Falta question' });
+  const status = await ollamaStatus();
+  if (!status.available) {
+    return res.json({ speech: 'No tengo motor de lenguaje local activo para preguntas libres. Puedes pedirme: resumen de cartera, informe de mercado, o análisis de un activo.', ollama: false });
+  }
+  try {
+    const overview = await cached('overview', 4 * 60_000, buildOverview);
+    const intel = await loadIntel();
+    const fused = intel?.fused ?? overview.opportunities;
+    const invs = await enrichInvestments().catch(() => []);
+    const context = [
+      `Fear&Greed: ${overview.fearGreed?.value ?? 'n/d'} (${overview.fearGreed?.label ?? ''})`,
+      'Activos (símbolo, precio, score, acción): ' + fused.map(f => `${f.symbol} $${f.price} ${f.fusedScore ?? f.score} ${f.fusedAction ?? f.action}`).join('; '),
+      invs.length ? 'Cartera: ' + invs.map(i => `${i.quantity} ${i.symbol} @${i.buyPrice} (P&L ${i.pnlPct}%)`).join('; ') : 'Cartera vacía',
+    ].join('\n');
+    const answer = await ollamaGenerate(
+      `Contexto del mercado ahora:\n${context}\n\nPregunta del usuario: ${question}\n\nResponde en español, máximo 4 frases, tono profesional, listo para leer en voz alta, sin markdown.`,
+      { system: 'Eres un analista senior de mercados. Nunca recomiendas operaciones automáticas; siempre recuerdas que es análisis automático, no asesoramiento financiero.', maxTokens: 250 }
+    );
+    res.json({ speech: answer + ' ' + DISCLAIMER_VOICE, ollama: true, model: status.model });
+  } catch (e) {
+    res.json({ speech: 'El motor local tardó demasiado en responder. Intenta una pregunta más corta.', error: e.message });
+  }
+});
+
 // ---------- Registro de inversiones ----------
 
-app.get('/api/investments', async (req, res) => {
+async function enrichInvestments() {
   const list = await readInvestments();
   // Enriquecer con precio actual
-  const withPrices = await Promise.all(list.map(async inv => {
+  return Promise.all(list.map(async inv => {
     let current = null;
     try {
       if (inv.assetType === 'crypto') {
@@ -289,7 +447,10 @@ app.get('/api/investments', async (req, res) => {
       pnlPct: value !== null && invested > 0 ? Math.round(((value - invested) / invested) * 10000) / 100 : null,
     };
   }));
-  res.json(withPrices);
+}
+
+app.get('/api/investments', async (req, res) => {
+  res.json(await enrichInvestments());
 });
 
 app.post('/api/investments', async (req, res) => {

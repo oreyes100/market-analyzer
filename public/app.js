@@ -15,6 +15,7 @@ $$('.tab').forEach(btn => {
     if (btn.dataset.tab === 'analisis') {
       requestAnimationFrame(() => charts.forEach(c => c.timeScale().fitContent()));
     }
+    if (btn.dataset.tab === 'ia') loadIntel();
   });
 });
 
@@ -326,9 +327,95 @@ $('#inv-form').addEventListener('submit', async e => {
   loadInvestments();
 });
 
+// ---------- Core IA (pestaña 🧠 + soporte del agente de voz) ----------
+
+let intelPollTimer = null;
+
+async function loadIntel() {
+  try {
+    const res = await fetch('/api/intel');
+    const d = await res.json();
+    if (d.building && !d.fused) {
+      $('#intel-status').textContent = 'Generando inteligencia (transcripciones + social)…';
+      if (!intelPollTimer) intelPollTimer = setTimeout(() => { intelPollTimer = null; loadIntel(); }, 20_000);
+      return;
+    }
+    $('#intel-status').textContent = 'Actualizado: ' + new Date(d.generatedAt).toLocaleString('es-ES')
+      + (d.ollama?.available ? ` · LLM local: ${d.ollama.model}` : ' · LLM local: no detectado')
+      + (d.deepYoutubeAvailable ? '' : ` · ${d.deepYoutubeReason}`);
+
+    $('#intel-digest').innerHTML = d.llmDigest
+      ? `<div class="panel" style="margin-bottom:16px"><h3>🗞️ Resumen narrativo (LLM local)</h3><p>${d.llmDigest}</p></div>` : '';
+
+    $('#intel-recos').innerHTML = (d.fused ?? []).map(f => {
+      const cls = f.fusedAction === 'comprar' ? 'buy' : f.fusedAction?.startsWith('vender') ? 'sell' : 'hold';
+      const scoreCls = f.fusedScore >= 2 ? 'pos' : f.fusedScore <= -2 ? 'neg' : 'mid';
+      const deep = f.deepYoutube;
+      const soc = f.social;
+      return `
+      <div class="card ${cls}">
+        <div class="card-head">
+          <span><span class="sym">${f.symbol}</span> <span class="tag">${TYPE_LABEL[f.type]}</span> <span class="muted">${f.name}</span></span>
+          <span class="score ${scoreCls}">${f.fusedScore > 0 ? '+' : ''}${f.fusedScore}</span>
+        </div>
+        <div class="price-row">
+          <span class="price">${fmtPrice(f.price)}</span>
+          <span class="muted">base ${f.score > 0 ? '+' : ''}${f.score}</span>
+        </div>
+        <div class="action ${cls}">${(f.fusedAction ?? '').toUpperCase()}</div>
+        <ul class="signals">
+          ${(f.intelDrivers ?? []).map(dr => `<li class="info">${dr}</li>`).join('') || '<li class="info">Sin señales de sentimiento profundo aún</li>'}
+          ${deep?.targets?.length ? `<li class="fund">Objetivos mencionados en YouTube: ${deep.targets.map(fmtPrice).join(' · ')}</li>` : ''}
+          ${deep?.supports?.length ? `<li class="compra">Soportes alegados: ${deep.supports.map(fmtPrice).join(' · ')}</li>` : ''}
+          ${deep?.resistances?.length ? `<li class="venta">Resistencias alegadas: ${deep.resistances.map(fmtPrice).join(' · ')}</li>` : ''}
+        </ul>
+        ${deep?.sources?.length ? `<details class="more"><summary>Fuentes (${deep.sources.length})</summary><ul class="signals">${deep.sources.map(s =>
+          `<li class="info">${s.analyst} — «${s.video}» (min ${s.at}, ${s.sentiment}, ${s.mentions} menciones)${s.quote ? `<br><span class="muted">"${s.quote}…"</span>` : ''}</li>`).join('')}</ul></details>` : ''}
+        ${soc?.stocktwits?.topMessages?.length ? `<details class="more"><summary>Social</summary><ul class="signals">${soc.stocktwits.topMessages.map(m =>
+          `<li class="${m.sentiment === 'Bullish' ? 'compra' : 'venta'}">[${m.sentiment}] ${m.body}</li>`).join('')}${(soc.reddit?.titles ?? []).map(t => `<li class="info">[Reddit] ${t}</li>`).join('')}</ul></details>` : ''}
+      </div>`;
+    }).join('') || '<div class="loading">Sin datos aún — el ciclo de inteligencia corre cada 15 min</div>';
+
+    $('#intel-channels').innerHTML = (d.perChannel ?? []).map(c => `
+      <div class="analyst">
+        <div class="analyst-head"><span>🎥 ${c.name}</span>${c.error ? `<span class="muted">${c.error}</span>` : ''}</div>
+        ${(c.videos ?? []).map(v => `<div class="video"><span>${v.title}</span><span class="meta">${v.error ? '⚠️ ' + v.error : `${v.lang} · ${v.assets?.length ?? 0} activos detectados`}</span></div>`).join('')}
+      </div>`).join('');
+  } catch (e) {
+    $('#intel-recos').innerHTML = `<div class="loading">Error: ${e.message}</div>`;
+  }
+}
+
+// Helpers para el agente de voz (voice.js)
+let aliasesMap = null;
+async function loadAliases() {
+  aliasesMap = await (await fetch('/api/aliases')).json();
+}
+
+window.assetFromSpeechClient = text => {
+  if (!aliasesMap) return null;
+  const t = ' ' + text.toLowerCase() + ' ';
+  for (const [id, a] of Object.entries(aliasesMap)) {
+    for (const w of a.words) {
+      if (t.includes(' ' + w + ' ') || t.includes(' ' + w + '.') || t.trim() === w) return id;
+    }
+  }
+  return null;
+};
+
+window.findAssetClient = assetId => {
+  const a = aliasesMap?.[assetId];
+  if (!a) return null;
+  const item = (assetsCatalog?.[a.type] ?? []).find(x => (x.id ?? x.symbol) === assetId);
+  return { type: a.type, symbol: a.symbol, name: item?.name ?? a.symbol };
+};
+
+window.loadInvestments = loadInvestments;
+
 // ---------- Init ----------
 
 loadOverview();
 loadAssetsCatalog();
 loadAnalysts();
 loadInvestments();
+loadAliases();

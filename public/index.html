@@ -19,6 +19,7 @@
       <button class="tab active" data-tab="oportunidades">🎯 Oportunidades</button>
       <button class="tab" data-tab="analisis">📈 Análisis</button>
       <button class="tab" data-tab="analistas">🎥 Analistas</button>
+      <button class="tab" data-tab="ia">🧠 IA</button>
       <button class="tab" data-tab="cartera">💼 Cartera</button>
     </nav>
   </header>
@@ -52,6 +53,19 @@
       <div id="analysts" class="analyst-list"><div class="loading">Cargando canales…</div></div>
     </section>
 
+    <!-- CORE IA -->
+    <section id="tab-ia" class="tab-panel">
+      <div class="section-head">
+        <h2>Núcleo de Inteligencia</h2>
+        <span class="muted" id="intel-status"></span>
+      </div>
+      <p class="muted disclaimer">Fusión del análisis técnico con transcripciones completas de YouTube (Agente A) y sentimiento social de StockTwits + Reddit (Agente B). Usa el micrófono flotante para hablar con el sistema (Agente C).</p>
+      <div id="intel-digest"></div>
+      <div id="intel-recos" class="cards"><div class="loading">Cargando inteligencia…</div></div>
+      <h2 style="margin:24px 0 8px">Cobertura de transcripciones</h2>
+      <div id="intel-channels" class="analyst-list"></div>
+    </section>
+
     <!-- CARTERA -->
     <section id="tab-cartera" class="tab-panel">
       <div class="section-head"><h2>Registro de inversiones</h2></div>
@@ -75,6 +89,19 @@
     </section>
   </main>
 
+  <!-- Agente de voz (Core IA) -->
+  <button id="voice-mic" title="Asistente de voz">🎙️</button>
+  <div id="voice-panel">
+    <div class="voice-head">
+      <span>🧠 Core IA — <span id="voice-status">inactivo</span></span>
+      <label class="voice-alerts"><input type="checkbox" id="voice-alerts-toggle" checked> alertas</label>
+      <button id="voice-close">✕</button>
+    </div>
+    <div id="voice-log"></div>
+    <div class="voice-hint">Toca 🎙️ y di: «informe de mercado», «resumen de cartera», «análisis de bitcoin», «añade 0.1 de bitcoin a 60000»…</div>
+  </div>
+
   <script src="app.js"></script>
+  <script src="voice.js"></script>
 </body>
 </html>
